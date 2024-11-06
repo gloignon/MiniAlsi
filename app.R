@@ -18,9 +18,7 @@ ui <- fluidPage(
       textAreaInput("text", "Or enter French text directly:", value = "", 
                     placeholder = "Type or paste French text here", 
                     width = '100%', height = '200px', resize = "both"),
-      actionButton("analyze", "Analyze"),
-      tags$div(id = "progress", style = "display: none; margin-top: 10px;"),
-      tags$style("#progress {font-size: 14px; color: #337ab7;}")
+      actionButton("analyze", "Analyze")
     ),
     
     mainPanel(
@@ -102,20 +100,16 @@ server <- function(input, output, session) {
       corpus_metrics <- list()
       n_files <- length(txt_files)
       
-      # Show progress to the user
-      updateProgress <- function(value) {
-        session$sendCustomMessage("updateProgress", list(value = value))
-      }
-      updateProgress(0)
-      
-      # Calculate metrics for each text file
-      for (i in seq_along(txt_files)) {
-        text <- readLines(txt_files[i], warn = FALSE)
-        corpus_metrics[[i]] <- calculate_metrics(paste(text, collapse = " "))
-        
-        # Update progress
-        updateProgress(i / n_files * 100)
-      }
+      # Progress bar for corpus analysis
+      withProgress(message = 'Analyzing corpus', value = 0, {
+        for (i in seq_along(txt_files)) {
+          text <- readLines(txt_files[i], warn = FALSE)
+          corpus_metrics[[i]] <- calculate_metrics(paste(text, collapse = " "))
+          
+          # Update progress bar
+          incProgress(1 / n_files)
+        }
+      })
       
       # Combine metrics into a data frame
       corpus_metrics_df <- do.call(rbind, corpus_metrics)
@@ -139,9 +133,10 @@ server <- function(input, output, session) {
       ggplot(melted_df, aes(x = variable, y = value)) +
         geom_boxplot() +
         facet_wrap(~ variable, scales = "free_y") +
-        labs(x = "Metric", y = "Value", title = "Corpus Analysis - Readability and Cohesion Metrics") +
+        labs(x = NULL, y = "Value", title = "Corpus Analysis - Readability and Cohesion Metrics") +
         theme_minimal() +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        theme(axis.text.x = element_blank(),  # Hide x-axis labels for individual boxes
+              axis.ticks.x = element_blank())
     }
   })
   
@@ -150,28 +145,7 @@ server <- function(input, output, session) {
     !is.null(results()) && results()$isCorpus
   })
   outputOptions(output, "isCorpus", suspendWhenHidden = FALSE)
-  
-  # JavaScript for updating progress bar
-  session$sendCustomMessage("updateProgress", list(value = 0))
-  observe({
-    session$sendCustomMessage("addProgress", "")
-  })
-  
 }
-
-# JavaScript for updating progress bar
-js <- "
-Shiny.addCustomMessageHandler('updateProgress', function(message) {
-  if (message.value === 0) {
-    $('#progress').show().html('Processing... 0%');
-  } else if (message.value === 100) {
-    $('#progress').html('Processing complete!').delay(1000).fadeOut();
-  } else {
-    $('#progress').html('Processing... ' + Math.round(message.value) + '%');
-  }
-});
-"
-tags$head(tags$script(HTML(js)))
 
 # Run the application 
 shinyApp(ui = ui, server = server)
