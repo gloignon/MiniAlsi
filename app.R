@@ -1,6 +1,7 @@
 library(shiny)
 library(udpipe)
 library(stringr)
+library(ggplot2)
 
 # Load the French bsd model (ensure it's downloaded and adjust path if necessary)
 model <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
@@ -11,42 +12,42 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(
-      textAreaInput("text", "Enter French text:", value = "", 
+      fileInput("corpus_zip", "Upload ZIP with TXT files (optional)", 
+                accept = c(".zip")),
+      textAreaInput("text", "Or enter French text directly:", value = "", 
                     placeholder = "Type or paste French text here", 
-                    width      = '100%', height = '200px', resize = "both"),
+                    width = '100%', height = '200px', resize = "both"),
       actionButton("analyze", "Analyze")
     ),
     
     mainPanel(
       h3("Readability and Cohesion Features"),
-      tableOutput("results")
+      conditionalPanel(
+        condition = "output.isCorpus == false",
+        tableOutput("results")
+      ),
+      conditionalPanel(
+        condition = "output.isCorpus == true",
+        plotOutput("corpusPlots")
+      )
     )
   )
 )
 
 # Define server logic
-server <- function(input, output) {
+server <- function(input, output, session) {
   
-  analyze_text <- eventReactive(input$analyze, {
-    text <- input$text
-    
-    # Annotate text using udpipe with the French model
+  # Helper function to calculate metrics for a given text
+  calculate_metrics <- function(text) {
     annotated <- udpipe_annotate(model, x = text)
     annotated_df <- as.data.frame(annotated)
     
-    # Calculate readability and cohesion metrics
-    
-    # Basic Metrics
     word_count <- nrow(annotated_df[annotated_df$upos %in% c("NOUN", "VERB", "ADJ", "ADV"), ])
     sentence_count <- length(unique(annotated_df$sentence_id))
-    
-    # Syllable count - count vowels in each token as an approximation
     syllable_count <- sum(sapply(gregexpr("[aeiouyAEIOUY]", annotated_df$token), function(x) max(0, length(x))))
     avg_sentence_length <- ifelse(sentence_count > 0, word_count / sentence_count, 0)
     avg_syllables_per_word <- ifelse(word_count > 0, syllable_count / word_count, 0)
     
-    # Lexical Cohesion Metrics
-    # Sentence-to-Sentence Lexical Cohesion (percentage of words shared between sentences)
     sentence_ids <- unique(annotated_df$sentence_id)
     cohesion_values <- c()
     for (i in 2:length(sentence_ids)) {
@@ -57,7 +58,6 @@ server <- function(input, output) {
     }
     avg_sentence_to_sentence_cohesion <- ifelse(length(cohesion_values) > 0, mean(cohesion_values, na.rm = TRUE), 0)
     
-    # Text-to-Sentence Lexical Cohesion (percentage of words in each sentence shared with entire text)
     text_words <- unique(annotated_df$lemma)
     text_sentence_cohesion <- sapply(sentence_ids, function(sid) {
       sentence_words <- annotated_df[annotated_df$sentence_id == sid, "lemma"]
@@ -66,29 +66,74 @@ server <- function(input, output) {
     })
     avg_text_to_sentence_cohesion <- mean(text_sentence_cohesion, na.rm = TRUE)
     
-    # Type-Token Ratio (vocabulary diversity)
     type_token_ratio <- length(unique(annotated_df$lemma)) / word_count
     
-    # Results Data Frame
-    results <- data.frame(
-      Metric = c("Word Count", "Sentence Count", "Syllable Count", 
-                 "Average Sentence Length", "Average Syllables per Word",
-                 "Avg Sentence-to-Sentence Lexical Cohesion", 
-                 "Avg Text-to-Sentence Lexical Cohesion", 
-                 "Type-Token Ratio (Vocabulary Diversity)"),
-      Value = c(word_count, sentence_count, syllable_count, 
-                round(avg_sentence_length, 2), round(avg_syllables_per_word, 2),
-                round(avg_sentence_to_sentence_cohesion, 2), 
-                round(avg_text_to_sentence_cohesion, 2),
-                round(type_token_ratio, 2))
+    data.frame(
+      "Word Count" = word_count,
+      "Sentence Count" = sentence_count,
+      "Syllable Count" = syllable_count,
+      "Average Sentence Length" = round(avg_sentence_length, 2),
+      "Average Syllables per Word" = round(avg_syllables_per_word, 2),
+      "Sentence-to-Sentence Lexical Cohesion" = round(avg_sentence_to_sentence_cohesion, 2),
+      "Text-to-Sentence Lexical Cohesion" = round(avg_text_to_sentence_cohesion, 2),
+      "Type-Token Ratio" = round(type_token_ratio, 2)
     )
-    
-    return(results)
+  }
+  
+  # Reactive to handle single text or corpus input
+  results <- eventReactive(input$analyze, {
+    if (is.null(input$corpus_zip)) {
+      # Single text mode
+      text <- input$text
+      if (nchar(text) > 0) {
+        list(data = calculate_metrics(text), isCorpus = FALSE)
+      } else {
+        NULL
+      }
+    } else {
+      # Corpus mode: analyze each file in the uploaded ZIP
+      temp_dir <- tempdir()
+      unzip(input$corpus_zip$datapath, exdir = temp_dir)
+      txt_files <- list.files(temp_dir, pattern = "\\.txt$", full.names = TRUE)
+      
+      # Calculate metrics for each text file and store in a list
+      corpus_metrics <- lapply(txt_files, function(file) {
+        text <- readLines(file, warn = FALSE)
+        calculate_metrics(paste(text, collapse = " "))
+      })
+      
+      # Combine metrics into a data frame
+      corpus_metrics_df <- do.call(rbind, corpus_metrics)
+      list(data = corpus_metrics_df, isCorpus = TRUE)
+    }
   })
   
+  # Display results table for single text mode
   output$results <- renderTable({
-    analyze_text()
+    if (!is.null(results()) && !results()$isCorpus) {
+      results()$data
+    }
   })
+  
+  # Display box plots for corpus mode
+  output$corpusPlots <- renderPlot({
+    if (!is.null(results()) && results()$isCorpus) {
+      corpus_metrics_df <- results()$data
+      melted_df <- reshape2::melt(corpus_metrics_df)
+      
+      ggplot(melted_df, aes(x = variable, y = value)) +
+        geom_boxplot() +
+        labs(x = "Metric", y = "Value", title = "Corpus Analysis - Readability and Cohesion Metrics") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    }
+  })
+  
+  # Boolean for UI conditionals
+  output$isCorpus <- reactive({
+    !is.null(results()) && results()$isCorpus
+  })
+  outputOptions(output, "isCorpus", suspendWhenHidden = FALSE)
 }
 
 # Run the application 
