@@ -6,7 +6,8 @@ WORKDIR /code
 RUN install2.r --error \
     ggExtra \
     shiny \
-    udpipe
+    udpipe \
+    reshape2
 
 # Install development packages from GitHub
 RUN installGithub.r \
